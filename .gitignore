@@ -34,3 +34,16 @@ enterprise-kb-qa/
 .idea/
 .DS_Store
 Thumbs.db
+
+
+# ===== 绝不公开 =====
+/个人简历*
+/复习*
+/练习*
+/测试[0-9]
+/项目优化学习计划*.md
+
+# 运行时产物
+/logs/
+/jieba.cache
+*.log

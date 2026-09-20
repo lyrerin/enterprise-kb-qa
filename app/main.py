@@ -3,18 +3,20 @@ from fastapi import FastAPI , Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.api import documents, qa,auth
 from fastapi.responses import JSONResponse
+from app.utils.logger import logger
+from app.core.exception import AppError
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期"""
-    print('🚀 企业知识库问答系统启动中...')
+    logger.info('企业知识库问答系统启动中...')
     # 启动时检查向量数据库状态
     from app.core.ingestion import get_ingestion_status
     status = get_ingestion_status()
-    print(f"📊 知识库状态: {status['total_documents']} 个文档, {status['total_chunks']} 个文本块")
+    logger.info(f"知识库状态: {status['total_documents']} 个文档, {status['total_chunks']} 个文本块")
     yield
-    print('👋 系统关闭')
+    logger.info('系统关闭')
 
 app = FastAPI(
     title="企业知识库智能问答系统",
@@ -52,8 +54,14 @@ async def health_check():
         'status':'healthy',
         'knowledge_base':status
     }
+from app.core.exception import AppError
+@app.exception_handler(AppError)
+async def app_error_handler(request: Request, exc: AppError):
+    logger.info(f"业务异常 %s %s -> %s", request.method, request.url.path, exc.message)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
+    
     logger.exception(f"全局异常: {exc}")
-    return JSONResponse(status_code=500, content={"error": str(exc)})
+    return JSONResponse(status_code=500, content={"detail": '服务器内部错误'})
