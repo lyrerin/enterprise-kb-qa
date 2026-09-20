@@ -1,0 +1,181 @@
+"""RAG 评估脚本：检索层 + 生成层
+
+检索层（不依赖 LLM，向量化 + 本地 reranker 即可跑）：
+    - 每题分别测 纯向量 / 混合RRF / 重排 / 改写+重排 四种策略
+    - 指标：recall@1（第一命中率）、hit_rate@k（召回率）、precision@k（精确率）、MRR
+生成层（需要可用的 LLM Key）：
+    - 忠实度 faithfulness：LLM 当裁判，判断回答里的论断有多少能被检索到的上下文支持
+
+跑法（必须在项目根目录、以模块方式跑）：
+    python -m eval.evaluate
+"""
+import json
+import statistics
+import sys
+import pathlib
+sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]))
+import warnings
+import logging
+from datetime import datetime
+from pathlib import Path
+from langchain_core.documents import Document
+from langchain_openai import ChatOpenAI
+from app.core.retriever import retrieve,similarity_search_with_score
+from app.core.rag_chain import ask_with_sources
+from app.config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
+
+
+warnings.filterwarnings('ignore')                    # 屏蔽 Chroma 弃用警告 / 分数范围警告
+logging.getLogger('jieba').setLevel(logging.ERROR)   # 屏蔽 jieba 分词加载日志
+EVAL_SET = Path(__file__).parent / 'eval_set.json'
+REPORT_DIR = Path(__file__).parent / 'reports'
+
+def _is_relevant(doc:Document,item:dict):
+    src = doc.metadata.get('source','')
+    if src not in item.get('expected_sources',[]):
+        return False
+    text = doc.page_content
+    return any(keyword in text for keyword in item.get('expected_keywords',[]))
+
+def _group_of(item:dict) -> str:
+    """按来源文档给题目分组，便于看不同文档类型的检索差异"""
+    src = item.get('expected_sources',['未知'])[0]
+    return Path(src).stem
+
+def _first_relevant_rank(docs,item):
+    for rank,doc in enumerate(docs,1):
+        if _is_relevant(doc,item):
+            return rank
+    return None
+
+def evaluate_retrieval(retriever,items,k:int = 3):
+    """检索指标：recall@1 / recall@k / precision@k / MRR，并按来源文档分组"""
+    hits, hits1, precisions, rrs = [], [], [], []
+    per_group = {}
+
+    for item in items:
+        docs = retriever(item['question'])[:k]
+        relevant = [d for d in docs if _is_relevant(d,item)]
+        rank = _first_relevant_rank(docs,item)
+
+        hit = 1.0 if relevant else 0.0
+        hit1 = 1.0 if rank == 1 else 0.0
+        precision = len(relevant)/len(docs) if docs else 0.0
+        rr = 1.0/rank if rank else 0.0
+
+        hits.append(hit); hits1.append(hit1); precisions.append(precision); rrs.append(rr)
+        g = per_group.setdefault(_group_of(item), {'hit': [], 'hit1': []})
+        g['hit'].append(hit); g['hit1'].append(hit1)
+
+    return {
+        f"recall@1": round(statistics.mean(hits1), 4),
+        f"recall@{k}": round(statistics.mean(hits), 4),
+        f"precision@{k}": round(statistics.mean(precisions), 4),
+        "MRR": round(statistics.mean(rrs), 4),
+        "分组命中率": {
+            name: {'题数': len(v['hit']),
+                   'recall@1': round(statistics.mean(v['hit1']), 4),
+                   f'recall@{k}': round(statistics.mean(v['hit']), 4)}
+            for name, v in per_group.items()
+        },
+    }
+
+def evaluate_faithfulness(items):
+    judge = _judge_llm()
+    scores = []
+    for item in items:
+        result = ask_with_sources(item['question'])
+        answer = result['answer']
+        context = '\n'.join(s['content'] for s in result['sources'])
+        prompt = (
+            "你是严谨的审查员。逐句判断下面回答中的论断，有多少能被参考资料支持。\n"
+            f"参考资料：\n{context}\n\n回答：{answer}\n\n"
+            "只输出一个 0~1 之间的小数（受支持论断的比例），不要解释。"
+        )
+        try:
+            score = float(judge.invoke(prompt).content.strip())
+        except ValueError:
+            score = 0.0
+        scores.append(score)
+    return {
+        "faithfulness": round(statistics.mean(scores), 4),
+    }
+
+def _judge_llm():
+    return ChatOpenAI(
+        api_key=DEEPSEEK_API_KEY,
+        base_url=DEEPSEEK_BASE_URL,
+        model=DEEPSEEK_MODEL,
+        temperature=0,
+    )
+
+def _strategies(k:int):
+    return {
+        "纯向量":   lambda q: [d for d, _ in similarity_search_with_score(q, k=k)],
+        "混合RRF":  lambda q: retrieve(q, strategy='hybrid', k=k),
+        "重排":     lambda q: retrieve(q, strategy='rerank', k=k),
+        "改写+重排": lambda q: retrieve(q, strategy='rewrite', k=k),
+    }
+
+def _write_report(rows, faithful, k):
+    """把结果落盘成 markdown，方便和上一次跑的结果做对比"""
+    REPORT_DIR.mkdir(exist_ok=True)
+    path = REPORT_DIR / f"{datetime.now():%Y%m%d-%H%M}-retrieval.md"
+    lines = [
+        f"# 检索评估报告 {datetime.now():%Y-%m-%d %H:%M}",
+        "",
+        f"- 评估集：`eval/eval_set.json`（{rows[0]['题数'] if rows else 0} 题）",
+        f"- 指标口径：recall@1 = top1 命中；recall@{k} = 前 {k} 条内命中；precision@{k} = 前 {k} 条中相关块占比；MRR = 首个相关块排名倒数均值",
+        "",
+        "| 策略 | recall@1 | " + f"recall@{k} | precision@{k} | MRR |",
+        "|---|---|---|---|---|",
+    ]
+    for r in rows:
+        if r.get('指标'):
+            m = r['指标']
+            lines.append(f"| {r['策略']} | {m['recall@1']} | {m[f'recall@{k}']} | {m[f'precision@{k}']} | {m['MRR']} |")
+        else:
+            lines.append(f"| {r['策略']} | 跳过 | 跳过 | 跳过 | 跳过 |")
+    lines.append("")
+    lines.append("## 按来源文档分组（recall@1 / " + f"recall@{k}）")
+    lines.append("")
+    lines.append("| 策略 | 文档 | 题数 | recall@1 | " + f"recall@{k} |")
+    lines.append("|---|---|---|---|---|")
+    for r in rows:
+        if not r.get('指标'):
+            continue
+        for name, g in r['指标']['分组命中率'].items():
+            lines.append(f"| {r['策略']} | {name} | {g['题数']} | {g['recall@1']} | {g[f'recall@{k}']} |")
+    lines.append("")
+    lines.append(f"## 生成层：忠实度 {faithful if faithful is not None else '未测（LLM 不可用）'}")
+    lines.append("")
+    path.write_text('\n'.join(lines), encoding='utf-8')
+    return path
+
+def run(k: int = 3):
+    items = json.loads(EVAL_SET.read_text(encoding='utf-8'))
+    if not items:
+        print("⚠️ eval_set.json 为空，请先填充测试题"); return
+
+    rows = []
+    for name, retriever in _strategies(k).items():
+        try:
+            metrics = evaluate_retrieval(retriever, items, k=k)
+            print(f"[{name}] 检索指标:", metrics)
+            rows.append({'策略': name, '题数': len(items), '指标': metrics})
+        except Exception as e:      # 改写策略依赖 LLM，Key 不可用时不拖垮其它策略
+            print(f"[{name}] 跳过：{type(e).__name__}: {str(e)[:120]}")
+            rows.append({'策略': name, '题数': len(items), '指标': None})
+
+    faithful = None
+    try:
+        faithful = evaluate_faithfulness(items)
+        print("忠实度:", faithful)
+    except Exception as e:
+        print(f"[忠实度] 跳过：{type(e).__name__}: {str(e)[:120]}")
+
+    print("报告已写入:", _write_report(rows, faithful, k))
+    return rows, faithful
+
+if __name__ == '__main__':
+    run()

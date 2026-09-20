@@ -1,0 +1,97 @@
+{
+  "strategy": "hybrid",
+  "rows": [
+    {
+      "idx": 10,
+      "question": "在公司干满一年能休几天年假？",
+      "strategy": "hybrid",
+      "secs": 2.54,
+      "parent_ids": [
+        "员工手册.txt#0",
+        "员工手册.txt#2",
+        "员工手册.pdf#3"
+      ],
+      "sources": [
+        "员工手册.pdf",
+        "员工手册.txt"
+      ],
+      "answer": "根据文档内容，入职满1年享有5天年假。[文档1]"
+    },
+    {
+      "idx": 11,
+      "question": "一个月迟到几次开始扣钱？",
+      "strategy": "hybrid",
+      "secs": 1.68,
+      "parent_ids": [
+        "员工手册.txt#0",
+        "员工手册.txt#2",
+        "员工手册.txt#1"
+      ],
+      "sources": [
+        "员工手册.txt"
+      ],
+      "answer": "根据 [文档1]，每月累计迟到超过3次，**第4次起**每次扣款50元。也就是说，一个月迟到达到第4次开始扣钱。"
+    },
+    {
+      "idx": 16,
+      "question": "报销的款一般多久能到账？",
+      "strategy": "hybrid",
+      "secs": 1.0,
+      "parent_ids": [
+        "员工手册.txt#1",
+        "员工手册.txt#0",
+        "员工手册.txt#2"
+      ],
+      "sources": [
+        "员工手册.txt"
+      ],
+      "answer": "根据[文档1]，报销流程为：提交发票→部门经理审批→财务审核→**3个工作日内到账**。因此，报销款一般在 **3个工作日内** 到账。"
+    },
+    {
+      "idx": 18,
+      "question": "公司多久考核一次绩效？",
+      "strategy": "hybrid",
+      "secs": 1.1,
+      "parent_ids": [
+        "员工手册.txt#2",
+        "员工手册.txt#1",
+        "员工手册.txt#0"
+      ],
+      "sources": [
+        "员工手册.txt"
+      ],
+      "answer": "公司每季度考核一次绩效，分别在1月、4月、7月、10月进行。[文档1]"
+    },
+    {
+      "idx": 1,
+      "question": "数据库管理系统V3的供应商是哪家公司？",
+      "strategy": "hybrid",
+      "secs": 1.23,
+      "parent_ids": [
+        null,
+        "员工手册.pdf#3",
+        null
+      ],
+      "sources": [
+        "产品列表.csv",
+        "员工手册.pdf"
+      ],
+      "answer": "数据库管理系统V3的供应商是 **Oracle中国**。[文档1]"
+    },
+    {
+      "idx": 34,
+      "question": "产品列表里哪个类别的平均单价最高？",
+      "strategy": "hybrid",
+      "secs": 2.29,
+      "parent_ids": [
+        null,
+        "员工手册.pdf#3",
+        null
+      ],
+      "sources": [
+        "产品列表.csv"
+      ],
+      "answer": "平均单价最高的类别是软件许可。"
+    }
+  ]
+}
