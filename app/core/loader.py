@@ -2,11 +2,9 @@
 import os
 from typing import List
 from langchain_core.documents import Document
-from langchain_community.document_loaders import (
-    TextLoader,
-    PyPDFLoader,
-    CSVLoader,
-    Docx2txtLoader,
+from app.core.parsers import (
+    PARSERS, 
+    SUPPORTED_EXTENSIONS,
     
 )
 
@@ -14,30 +12,23 @@ from langchain_community.document_loaders import (
 def load_document(file_path: str) -> List[Document]:
     """根据文件后缀自动选择加载器"""
     ext = os.path.splitext(file_path)[1].lower()
+    parser = PARSERS.get(ext)
+    if parser is None:
+        raise ValueError(f"不支持的文件格式: {ext}, 支持的格式: {sorted(SUPPORTED_EXTENSIONS)}")
+    
+    return parser(file_path)
 
-    loaders = {
-        ".txt":  lambda p: TextLoader(p, encoding="utf-8").load(),
-        ".pdf":  lambda p: PyPDFLoader(p).load(),
-        ".csv":  lambda p: CSVLoader(p, encoding="utf-8").load(),
-        ".docx": lambda p: Docx2txtLoader(p).load(),
-    }
-
-    if ext not in loaders:
-        raise ValueError(f"不支持的文件格式: {ext}，支持的格式: {list(loaders.keys())}")
-
-    return loaders[ext](file_path)
 
 
 def load_documents_from_directory(directory: str) -> List[Document]:
     """批量加载目录下所有支持的文档"""
     all_docs = []
-    supported = {".txt", ".pdf", ".csv", ".docx"}
 
     for filename in os.listdir(directory):
         file_path = os.path.join(directory, filename)
         ext = os.path.splitext(filename)[1].lower()
 
-        if ext in supported :
+        if ext in SUPPORTED_EXTENSIONS:
             try:
                 docs = load_document(file_path)
                 for doc in docs:

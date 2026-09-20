@@ -1,20 +1,24 @@
 import os 
 from typing import List
+from collections import defaultdict
 from langchain_core.documents import Document
 from app.core.loader import load_document, load_documents_from_directory
-from app.core.splitter import get_text_splitter
+from app.core.splitter import split_by_type, detect_doc_type
 from app.core.embeddings import get_embeddings
-from app.config import CHROMA_DIR, CHUNK_SIZE, CHUNK_OVERLAP
+from app.config import CHROMA_DIR
 from langchain_community.vectorstores import Chroma
 
 def ingest_file(file_path:str,clear_first: bool = False) -> int:
     """导入单个文件"""
+    source = os.path.basename(file_path)
     docs = load_document(file_path)
-    print(f'加载文档:{os.path.basename(file_path)},共{len(docs)}页/段落')
+    for doc in docs:
+        doc.metadata['source'] = source
+    print(f'加载文档:{source},共{len(docs)}页/段落')
 
-    splitter = get_text_splitter(CHUNK_SIZE, CHUNK_OVERLAP)
-    chunks = splitter.split_documents(docs)
-    print(f'分割文档为{len(chunks)}个文本块')
+    doc_type = detect_doc_type(docs,source)
+    chunks = split_by_type(docs,doc_type)
+    print(f'分割文档为{len(chunks)}个文本块 (切分策略: {doc_type})')
 
     embeddings = get_embeddings()
     print(f'文本向量化成功')
@@ -31,9 +35,10 @@ def ingest_file(file_path:str,clear_first: bool = False) -> int:
             embedding_function=embeddings,
 
         )
-        vectorstore.add_documents(chunks)
+        vectorstore._collection.delete(where={'source': source})
+        vectorstore.add_documents(chunks)   
 
-    print(f"✅ 导入完成! 文件: {os.path.basename(file_path)}, 块数: {len(chunks)}")
+    print(f"✅ 导入完成! 文件: {source}, 块数: {len(chunks)}")
     return len(chunks)    
 
 
@@ -48,8 +53,18 @@ def ingest_directory(directory: str, clear_first: bool = True) -> int:
         print("⚠️  没有找到支持的文档")
         return 0
 
-    splitter = get_text_splitter(CHUNK_SIZE, CHUNK_OVERLAP)
-    chunks = splitter.split_documents(docs)
+    # 按文件名分组：每个文件的 doc_type 只作用于它自己的块
+    groups = defaultdict(list)
+    for doc in docs:
+        groups[doc.metadata.get('source','')].append(doc)
+
+    chunks = []
+    for src,group in groups.items():
+        doc_type = detect_doc_type(group,src)
+        group_chunks = split_by_type(group,doc_type)
+        print(f"✂️  {src}: {doc_type} 策略 → {len(group_chunks)} 个块")
+        chunks.extend(group_chunks)
+
     print(f"✂️  总计分割: {len(chunks)} 个文本块")
     
     embeddings = get_embeddings()
@@ -100,6 +115,10 @@ def _clear_vectorstore():
     if os.path.exists(CHROMA_DIR):
         shutil.rmtree(CHROMA_DIR, ignore_errors=True)
         os.makedirs(CHROMA_DIR, exist_ok=True)
+
+    # 父块是第二个库，必须一起清，否则清空后检索会捞出幽灵内容
+    from app.core.parent_store import clear_parents
+    clear_parents()
     print("🗑️  向量数据库已清空")
 
 if __name__ == "__main__":
