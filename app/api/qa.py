@@ -6,6 +6,7 @@ from app.core.rag_chain import ask_with_sources
 from app.core.memory_manager import chat as memory_chat, clear_history, get_chat_history
 from app.core.vectorstore import load_vectorstore
 from typing import AsyncGenerator
+from app.core.exception import KnowledgeError
 import json
 import asyncio
 
@@ -28,12 +29,8 @@ async def ask_question(request: QuestionRequest):
             session_id=request.session_id,
         )
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=400,
-            detail="知识库为空，请先上传文档"
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"问答失败: {str(e)}")
+        raise KnowledgeError()
+    
 
 
 @router.post("/chat", response_model=AnswerResponse)
@@ -50,12 +47,44 @@ async def chat_with_memory(request: QuestionRequest):
             session_id=request.session_id,
         )
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=400,
-            detail="知识库为空，请先上传文档"
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"对话失败: {str(e)}")
+        raise KnowledgeError()
+
+
+@router.post("/agent")
+async def agent_ask_question(request: QuestionRequest):
+    """Agent 问答：LLM 自主决定是否检索知识库（Function Calling）
+
+    与 /ask 的区别：这里不是固定流程，而是由 LLM 判断是否需要调用检索工具。
+    """
+    
+    from app.core.agent import agent_ask
+    result = agent_ask(request.question)
+    return {
+            "question": request.question,
+            "answer": result["answer"],
+            "used_tool": result["used_tool"],
+            "sources": result["sources"],
+            "session_id": request.session_id,
+        }
+    # except Exception as e:
+    #     raise HTTPException(status_code=500, detail=f"Agent 问答失败: {str(e)}" )
+
+
+@router.post("/graph")
+async def graph_ask_question(request: QuestionRequest):
+    """LangGraph 版问答：先判要不要查知识库，再决定走检索还是直接回答
+
+    与 /agent 的区别：/agent 由 LLM 用 Function Calling 自己决定调不调工具；
+    这里是一张显式的图，路由规则看得见、可改、能加节点（改写重试等）。
+    """
+    from app.core.graph import ask_graph
+    result = ask_graph(request.question)
+    return {
+            "question": request.question,
+            "answer": result["answer"],
+            "sources": result["sources"],
+            "session_id": request.session_id,
+        }
 
 
 @router.post("/ask/stream")
@@ -105,3 +134,19 @@ async def view_chat_history(session_id: str):
             result.append({"role": "assistant", "content": msg.content})
   
     return {"session_id": session_id, "messages": result, "count": len(result)}
+
+@router.post("/agent/chat")
+async def agent_chat_with_memory(request: QuestionRequest):
+    """带记忆的 Agent 对话"""
+    try:
+        from app.core.agent import agent_chat
+        result = agent_chat(request.session_id, request.question)
+        return {
+            "question": request.question,
+            "answer": result["answer"],
+            "used_tool": result["used_tool"],
+            "sources": result["sources"],
+            "session_id": request.session_id,
+        }
+    except FileNotFoundError:
+        raise KnowledgeError()

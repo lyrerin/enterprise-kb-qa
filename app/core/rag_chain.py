@@ -2,9 +2,8 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
-from app.core.vectorstore import load_vectorstore
-from app.config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL,DEEPSEEK_MODEL
-from langchain_core.documents import Document
+from app.config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL,DEEPSEEK_MODEL,FINAL_K
+from app.core.retriever import retrieve, expand_to_parents
 
 def build_rag_chain():
     """构建 RAG 链
@@ -13,11 +12,9 @@ def build_rag_chain():
     用户问题 → 向量检索(找到相关文档) → 拼入提示词 → LLM生成答案 → 输出
     """
     
-    # 1. 加载检索器
-    vectorstore = load_vectorstore()
-    retriever = vectorstore.as_retriever(
-        search_kwargs={"k": 3}  # 每次检索最相关的3个文本块
-    )
+    # 1. 检索不再自己 load_vectorstore + as_retriever(k=3)（那样绕过了总闸，
+    #    重排/混合/改写/父块全享受不到）。统一走 retrieve()，策略由 RETRIEVAL_STRATEGY 决定，
+    #    再回表展开成整节父块，拼成带 [文档i] 来源标注的 context 字符串。
     
     # 2. 设计提示词模板
     #    这是 RAG 最核心的 prompt，质量直接决定答案好坏
@@ -50,7 +47,8 @@ def build_rag_chain():
     # 4. 组装链
     #    RunnablePassthrough 用于把原始问题原样传递给 prompt 的 question 变量
     rag_chain = (
-        {"context": retriever, "question": RunnablePassthrough()}
+        {"context": RunnableLambda(lambda q: expand_to_parents(retrieve(q,k=FINAL_K))),
+         "question":  RunnablePassthrough()}
         | prompt
         | llm
         | StrOutputParser()
@@ -101,17 +99,17 @@ def demo_qa():
 
 def ask_with_sources(question: str) -> dict:
     """提问并返回答案 + 引用来源"""
-    vectorstore = load_vectorstore()
-    retriever = vectorstore.as_retriever(
-        search_kwargs={"k": 3}  # 每次检索最相关的3个文本块
-    )
-    retrieved_docs = retriever.invoke(question)
-    
-    context_parts = []
-    for i,doc in enumerate(retrieved_docs, 1):
-        source = doc.metadata.get('source','未知')
-        context_parts.append(f'[文档{i}], 来源: {source}\n{doc.page_content}')
-        context = '\n\n'.join(context_parts)
+    from app.core.router import run_sql_path
+    sql_result = run_sql_path(question)
+    if sql_result is not None:
+        return sql_result
+    # vectorstore = load_vectorstore()
+    # retriever = vectorstore.as_retriever(
+    #     search_kwargs={"k": 3}  # 每次检索最相关的3个文本块
+    # )
+    retrieved_docs = retrieve(question,k=FINAL_K)
+    # 命中子块 → 回表换成整节父块（没有父块的块用原文兜底），带 [文档i] 来源标注
+    context = expand_to_parents(retrieved_docs)
 
     template = """你是一个专业的企业知识库助手。请根据以下文档内容回答用户问题。
 

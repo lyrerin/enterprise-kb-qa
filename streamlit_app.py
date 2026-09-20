@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import uuid
+from app.core.parsers import SUPPORTED_EXTENSIONS
 
 API_BASE = "http://localhost:8000"
 
@@ -24,7 +25,7 @@ with st.sidebar:
     # 上传文档（key 动态变化，上传完成后强制重建上传框实现清空）
     uploaded_file = st.file_uploader(
         "上传知识文档",
-        type=["pdf", "txt", "csv", "docx", "doc"],
+        type=SUPPORTED_EXTENSIONS,
         help="支持 PDF、Word、TXT、CSV 格式",
         key=f"file_uploader_{st.session_state.uploader_reset}",
     )
@@ -86,6 +87,8 @@ if "messages" not in st.session_state:
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
+        if msg.get("used_tool"):
+            st.caption(f"🔧 工具调用: {', '.join(msg['used_tool'])}")
         if msg.get("sources"):
             with st.expander("📎 引用来源"):
                 for i, src in enumerate(msg["sources"], 1):
@@ -98,11 +101,11 @@ if question := st.chat_input("输入你的问题，按 Enter 发送..."):
     st.chat_message("user").write(question)
     st.session_state.messages.append({"role": "user", "content": question})
   
-    # 获取回答
+    # 获取回答（Agent 模式：LLM 自主决策是否调用 检索知识库/计算/时间 等工具）
     with st.chat_message("assistant"):
         with st.spinner("思考中..."):
             resp = requests.post(
-                f"{API_BASE}/api/qa/ask",
+                f"{API_BASE}/api/qa/agent/chat",
                 json={
                     "question": question,
                     "session_id": st.session_state.session_id,
@@ -112,9 +115,14 @@ if question := st.chat_input("输入你的问题，按 Enter 发送..."):
             if resp.status_code == 200:
                 data = resp.json()
                 answer = data["answer"]
-                sources = data["sources"]
+                sources = data.get("sources", [])
+                used_tool = data.get("used_tool", [])
               
                 st.write(answer)
+              
+                if used_tool:
+                    with st.expander(f"🔧 已调用工具: {', '.join(used_tool)}"):
+                        st.caption("LLM 自主决策调用了以上工具来回答问题")
               
                 if sources:
                     with st.expander("📎 引用来源"):
@@ -126,6 +134,7 @@ if question := st.chat_input("输入你的问题，按 Enter 发送..."):
                     "role": "assistant",
                     "content": answer,
                     "sources": sources,
+                    "used_tool": used_tool,
                 })
             else:
                 st.error(f"问答失败: {resp.text}")

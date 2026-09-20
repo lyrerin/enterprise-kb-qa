@@ -2,6 +2,11 @@ import os
 import shutil
 from fastapi import APIRouter, File, UploadFile, HTTPException
 from app.models.schemas import DocumentUploadResponse, KnowledgeBaseStatus
+from app.core.parsers import SUPPORTED_EXTENSIONS
+from app.core.exception import AppError
+from app.utils.logger import logger
+
+
 
 router = APIRouter()
 
@@ -14,28 +19,27 @@ async def upload_document(file: UploadFile = File(...)):
     """上传单个文档
     支持格式: PDF, Word (.docx/.doc), TXT, CSV
     """
-    allowed_extensions = {'.pdf', '.docx', '.doc', '.txt', '.csv'}
     ext = os.path.splitext(file.filename or '')[1].lower()
 
-    if ext not in allowed_extensions:
+    if ext not in SUPPORTED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f'不支持的文件格式: {ext}, 支持的格式: {list(allowed_extensions)}'
+            detail=f'不支持的文件格式: {ext}, 支持的格式: {list(SUPPORTED_EXTENSIONS)}'
         )
 
     file_path = os.path.join(UPLOAD_DIR, file.filename)
-    try:
-        with open(file_path, 'wb') as f:
-            content = await file.read()
-            f.write(content)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"文件保存失败: {str(e)}")
+    with open(file_path, 'wb') as f:
+        content = await file.read()
+        f.write(content)
 
     try:
         from app.core.ingestion import ingest_file
         chunks_count = ingest_file(file_path, clear_first=False)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"文档处理失败: {str(e)}")
+    except AppError:
+        raise
+    except Exception :
+        logger.exception("文档处理失败: %s", file.filename)
+        raise 
 
     return DocumentUploadResponse(
         filename=file.filename,
@@ -50,7 +54,7 @@ async def upload_documents(files: list[UploadFile] = File(...)):
     results = []
     for file in files:
         ext = os.path.splitext(file.filename or '')[1].lower()
-        if ext not in {'.pdf', '.txt', '.csv', '.docx', '.doc'}:
+        if ext not in SUPPORTED_EXTENSIONS:
             results.append({
                 'filename': file.filename,
                 'status': 'skipped',
